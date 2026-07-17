@@ -261,9 +261,14 @@ class RenderingWorklet:
                     case _:
                         _LOGGER.warning("Unexpected scheduler event: %r", scheduler_event)
 
-            state, next_ts = await self._generate_frames(
-                bus, renderer, state, next_ts, internal_config, step_result, user_chunk
-            )
+            try:
+                state, next_ts = await self._generate_frames(
+                    bus, renderer, state, next_ts, internal_config, step_result, user_chunk
+                )
+            except RuntimeError as e:
+                if "timed out" in str(e):
+                    break
+                raise    
 
             start_next_render_at = float(max(next_ts - durations.present / 2, clocks.now))
             sleep_for = start_next_render_at - clocks.now

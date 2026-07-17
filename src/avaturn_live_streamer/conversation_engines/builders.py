@@ -1,18 +1,16 @@
 # SPDX-FileCopyrightText: 2026 Goodsize Inc.
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 
-"""Shared engine builders used by local CLI entry points.
+"""Shared engine builders used by local CLI entry points."""
 
-Returns `(engine_config, engine_run)` for each supported engine kind, where
-`engine_run` is the worklet-shaped callable `(EventBus, StreamClocks) -> Coroutine`.
-
-Credentials are supplied inline via `EngineOptions` so the local UI can pass
-them per-session instead of relying on process env vars.
-"""
+import asyncio
+import re
 
 from avaturn_live_streamer.conversation_engines.custom_http_engine import run as custom_http_run
+from avaturn_live_streamer.conversation_engines.custom_http_engine import _text_to_audio
 from collections.abc import Callable, Coroutine
 from typing import Annotated, Literal
+from functools import partial
 
 import httpx
 from pydantic import BaseModel, Discriminator
@@ -52,8 +50,11 @@ class OpenAIEngineOptions(BaseModel):
     prompt: str = DEFAULT_OPENAI_PROMPT
     voice: OpenaiRealtimeApiVoice = DEFAULT_OPENAI_VOICE
 
+
 class CustomEngineOptions(BaseModel):
     type: Literal["custom"] = "custom"
+    content: str = ""
+    topic: str = ""
 
 
 class CartesiaEngineOptions(BaseModel):
@@ -61,13 +62,11 @@ class CartesiaEngineOptions(BaseModel):
     api_key: str
     agent_id: str
 
+
 EngineOptions = Annotated[
     OpenAIEngineOptions | CartesiaEngineOptions | CustomEngineOptions,
     Discriminator("type"),
 ]
-
-
-
 
 
 async def _mint_cartesia_token(api_key: str) -> str:
@@ -114,26 +113,18 @@ async def mint_openai_realtime_secret(
         session["tracing"] = tracing
     secret = await oai.realtime.client_secrets.create(
         expires_after={"seconds": 7200, "anchor": "created_at"},
-        session=session,  # pyright: ignore [reportArgumentType]
+        session=session,
     )
     return secret.value
 
 
-async def build_cartesia(
-    *,
-    stream_id: str,
-    options: CartesiaEngineOptions,
-) -> BuiltEngine:
+async def build_cartesia(*, stream_id: str, options: CartesiaEngineOptions) -> BuiltEngine:
     token = await _mint_cartesia_token(options.api_key)
     cfg = CartesiaConversationEngineConfig(access_token=token, agent_id=options.agent_id)
     return cfg, CartesiaApiClient(cfg, stream_id=stream_id).run
 
 
-async def build_openai(
-    *,
-    stream_id: str,
-    options: OpenAIEngineOptions,
-) -> BuiltEngine:
+async def build_openai(*, stream_id: str, options: OpenAIEngineOptions) -> BuiltEngine:
     tracing: dict[str, object] = {
         "workflow_name": "avaturn-live-local",
         "group_id": stream_id,
@@ -157,7 +148,10 @@ async def build_engine(options: EngineOptions, *, stream_id: str) -> BuiltEngine
         case CartesiaEngineOptions():
             return await build_cartesia(stream_id=stream_id, options=options)
         case CustomEngineOptions():
-            from avaturn_live_streamer.conversation_engines.realtime_api_client import RealtimeApiClient
-            from avaturn_live_streamer.conversation_engines.configs import OpenAIRealtimeAPIConversationEngineConfig
-            cfg = OpenAIRealtimeAPIConversationEngineConfig(client_secret="custom")
-            return cfg, custom_http_run
+             speech_text = options.content if options.content else f"{options.topic} පිළිබඳ පාඩම."
+             speech_text = re.sub(r'\[IMAGE:[^\]]+\]', '', speech_text, flags=re.IGNORECASE).strip()[:3000]
+             loop = asyncio.get_event_loop()
+             audio_int16 = await loop.run_in_executor(None, _text_to_audio, speech_text)
+             print(f"[Builder] TTS ready — {len(audio_int16)} samples, {len(audio_int16)/24000:.1f}s")
+             cfg = OpenAIRealtimeAPIConversationEngineConfig(client_secret="custom")
+             return cfg, partial(custom_http_run, audio_int16=audio_int16, topic=options.topic)

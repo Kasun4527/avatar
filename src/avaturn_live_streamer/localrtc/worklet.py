@@ -62,11 +62,13 @@ class LocalRTCWorklet:
 
     @async_log_entry_exit
     async def run(self, bus: EventBus, clocks: StreamClocks) -> None:
-        # Block on ICE/DTLS reaching "connected" before spawning the workers.
-        # Without this, sub-workers race the connection and clocks.start()
-        # could anchor the wall-clock PTS epoch on the renderer's first frame
-        # -- potentially many seconds before media can actually flow.
-        await self._peer.wait_connected(timeout=30.0)
+        try:
+            await self._peer.wait_connected(timeout=30.0)
+        except TimeoutError:
+            _LOGGER.warning("WebRTC connection timed out — peer never connected, exiting cleanly")
+
+            bus.ready()  # unblock other workers waiting on this worklet
+            return
 
         async with TaskGroup() as tg:
             main_task = tg.create_task(self._video_to_peer_worker(bus.clone(), clocks))

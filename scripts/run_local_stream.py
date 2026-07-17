@@ -34,9 +34,7 @@ from dotenv import load_dotenv
 
 LOG = logging.getLogger("orchestrator")
 
-# Load .env into os.environ before anything else reads env vars. Pydantic-settings
-# only populates its own Config object from .env; modules that call os.environ.get()
-# directly (e.g. ice.py for CLOUDFLARE_TURN_KEY_*) need the values exported here.
+# Load .env into os.environ before anything else reads env vars.
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
@@ -47,10 +45,6 @@ def _env_int(name: str, default: int) -> int:
 
 def _start_renderer(port: int) -> subprocess.Popen[bytes]:
     env = os.environ.copy()
-    # The renderer reads its own settings (AVTR1_LOCAL_STORAGE etc.) from env;
-    # don't fight with it. The renderer hardcodes port 8000 in __main__, so we
-    # set it via uvicorn here by invoking app:app directly with --port.
-    # Disable the LB keep-alive worker -- there is no LB in the local setup.
     env.setdefault("LOAD_BALANCER_URL", "disabled")
     cmd = [
         "pixi", "run", "-e", "default",
@@ -72,12 +66,6 @@ def _wait_for_health(
     timeout_s: float = 300.0,
     is_interrupted: Callable[[], bool] = lambda: False,
 ) -> None:
-    """Poll http://localhost:{port}/health once per second until 200 or timeout.
-
-    Raises ``_Interrupted`` if ``is_interrupted()`` becomes True between polls
-    so SIGINT/SIGTERM during the (potentially long) renderer warmup aborts
-    promptly instead of waiting out the deadline.
-    """
     deadline = time.monotonic() + timeout_s
     last_err: str | None = None
     with httpx.Client(timeout=3.0) as client:
@@ -92,7 +80,6 @@ def _wait_for_health(
                 last_err = f"HTTP {r.status_code}: {r.text[:200]}"
             except httpx.HTTPError as e:
                 last_err = f"{type(e).__name__}: {e}"
-            # Sleep in short slices so a signal between polls is noticed quickly.
             slept = 0.0
             while slept < 1.0 and not is_interrupted():
                 time.sleep(0.1)
@@ -102,15 +89,16 @@ def _wait_for_health(
 
 def _start_streamer(host: str, port: int, renderer_port: int) -> subprocess.Popen[bytes]:
     env = os.environ.copy()
-    # Note the double `RENDERERS__` segment: `Config.renderers: RenderersConfig`
-    # is itself a settings model with a `renderers` field, so the env path is
-    # Config.renderers.renderers["avtrn-1"]. Matches upstream local.env convention.
     env["RENDERERS__RENDERERS__AVTRN_1__MODE"] = "single"
     env["RENDERERS__RENDERERS__AVTRN_1__LB_OR_INSTANCE_URL"] = f"http://localhost:{renderer_port}"
+    idle_timeout = _env_int("IDLE_TIMEOUT", 300)
+    max_duration = _env_int("MAX_DURATION", 7200)
     cmd = [
         sys.executable, "-m", "avaturn_live_streamer.local_stream_cli",
         "--host", host,
         "--port", str(port),
+        "--idle-timeout", str(idle_timeout),
+        "--max-duration", str(max_duration),
     ]
     LOG.info("starting streamer: %s", " ".join(cmd))
     return subprocess.Popen(cmd, env=env)
@@ -137,7 +125,7 @@ def main() -> int:
         format="%(asctime)s %(levelname)s orchestrator: %(message)s",
     )
 
-    host = os.environ.get("STREAMER_HOST", "127.0.0.1")
+    host = os.environ.get("STREAMER_HOST", "0.0.0.0")
     port = _env_int("STREAMER_PORT", 7860)
     renderer_port = _env_int("RENDERER_PORT", 8000)
 
@@ -155,7 +143,6 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _sig_handler)
 
     try:
-        # Wait for renderer health.
         try:
             _wait_for_health(renderer_port, is_interrupted=lambda: interrupted)
         except _Interrupted:
@@ -171,7 +158,6 @@ def main() -> int:
         streamer = _start_streamer(host, port, renderer_port)
         LOG.info("streamer started pid=%d", streamer.pid)
 
-        # Wait for either child to exit (or signal).
         while not interrupted:
             time.sleep(0.5)
             if renderer.poll() is not None:
