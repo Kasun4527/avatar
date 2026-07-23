@@ -149,9 +149,13 @@ async def build_engine(options: EngineOptions, *, stream_id: str) -> BuiltEngine
             return await build_cartesia(stream_id=stream_id, options=options)
         case CustomEngineOptions():
              speech_text = options.content if options.content else f"{options.topic} පිළිබඳ පාඩම."
-             speech_text = re.sub(r'\[IMAGE:[^\]]+\]', '', speech_text, flags=re.IGNORECASE).strip()[:3000]
+             speech_text = re.sub(r'\[IMAGE:[^\]]+\]', '', speech_text, flags=re.IGNORECASE).strip()[:8000]
+             paragraphs = [p.strip() for p in re.split(r'\n\s*\n', speech_text) if p.strip()] or [speech_text]
              loop = asyncio.get_event_loop()
-             audio_int16 = await loop.run_in_executor(None, _text_to_audio, speech_text)
-             print(f"[Builder] TTS ready — {len(audio_int16)} samples, {len(audio_int16)/24000:.1f}s")
+             audio_chunks = []
+             for para in paragraphs:
+                 audio = await loop.run_in_executor(None, _text_to_audio, para)
+                 audio_chunks.append(audio)
+                 print(f"[Builder] TTS ready para — {len(audio)} samples, {len(audio)/24000:.1f}s")
              cfg = OpenAIRealtimeAPIConversationEngineConfig(client_secret="custom")
-             return cfg, partial(custom_http_run, audio_int16=audio_int16, topic=options.topic)
+             return cfg, partial(custom_http_run, audio_chunks=audio_chunks, topic=options.topic)

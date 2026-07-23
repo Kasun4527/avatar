@@ -46,26 +46,29 @@ def _text_to_audio(text: str) -> np.ndarray:
     return arr
 
 
-async def run(bus, clocks, audio_int16=None, topic=""):
+async def run(bus, clocks, audio_chunks=None, topic=""):
     bus.ready()  # must be first — before any await
     await asyncio.sleep(0.5)
 
-    if audio_int16 is not None and len(audio_int16) > 0:
-        audio_bytes = audio_int16.tobytes()
-        segment_id = str(TypeID("seg"))
-        buffer = SpeechBuffer.from_bytes(audio_bytes, 24000)
-        print(f"[TeacherEngine] publishing audio: samples={len(audio_int16)} duration={len(audio_int16)/24000:.1f}s")
-        try:
-            await bus.publish(SegmentGenerationStarted(segment_id=segment_id))
-            await asyncio.sleep(0.1)
-            await bus.publish(SegmentChunkGenerated(segment_id=segment_id, buffer=buffer))
-            await asyncio.sleep(0.1)
-            await bus.publish(SegmentGenerationCompleted(segment_id=segment_id))
-        except RuntimeError as e:
-            if "timed out" in str(e):
-                print("[TeacherEngine] bus timed out — peer disconnected, exiting cleanly")
-                return
-            raise
+    if audio_chunks:
+        for i, audio_int16 in enumerate(audio_chunks):
+            if audio_int16 is None or len(audio_int16) == 0:
+                continue
+            audio_bytes = audio_int16.tobytes()
+            segment_id = str(TypeID("seg"))
+            buffer = SpeechBuffer.from_bytes(audio_bytes, 24000)
+            print(f"[TeacherEngine] publishing para {i}: samples={len(audio_int16)} duration={len(audio_int16)/24000:.1f}s")
+            try:
+                await bus.publish(SegmentGenerationStarted(segment_id=segment_id, metadata={"para_index": str(i)}))
+                await asyncio.sleep(0.1)
+                await bus.publish(SegmentChunkGenerated(segment_id=segment_id, buffer=buffer))
+                await asyncio.sleep(0.1)
+                await bus.publish(SegmentGenerationCompleted(segment_id=segment_id))
+            except RuntimeError as e:
+                if "timed out" in str(e):
+                    print("[TeacherEngine] bus timed out — peer disconnected, exiting cleanly")
+                    return
+                raise
     else:
         print(f"[TeacherEngine] no audio to publish")
 

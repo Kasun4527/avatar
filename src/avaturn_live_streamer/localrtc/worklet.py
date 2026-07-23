@@ -28,6 +28,8 @@ from avaturn_live_streamer.event_bus import EventBus
 from avaturn_live_streamer.events import (
     ParticipantJoined,
     ParticipantLeft,
+    SegmentPlaybackCompleted,
+    SegmentPlaybackStarted,
     Shutdown,
     StreamEnded,
     StreamStarted,
@@ -60,13 +62,25 @@ class LocalRTCWorklet:
     _peer: LocalRTC
     _pixel_format: PixelFormat
 
+    async def _playback_event_forwarder(self, bus: EventBus) -> None:
+        async with bus.subscribe(SegmentPlaybackStarted, SegmentPlaybackCompleted, Shutdown) as sub:
+            bus.ready()
+            while True:
+                event = await sub.get_next()
+                if event is None or isinstance(event, Shutdown):
+                    return
+                raw_index = event.metadata.get("para_index")
+                self._peer.send_event({
+                    "type": event.type,
+                    "para_index": int(raw_index) if raw_index is not None else None,
+                })
+
     @async_log_entry_exit
     async def run(self, bus: EventBus, clocks: StreamClocks) -> None:
         try:
             await self._peer.wait_connected(timeout=30.0)
         except TimeoutError:
             _LOGGER.warning("WebRTC connection timed out — peer never connected, exiting cleanly")
-
             bus.ready()  # unblock other workers waiting on this worklet
             return
 
@@ -74,6 +88,7 @@ class LocalRTCWorklet:
             main_task = tg.create_task(self._video_to_peer_worker(bus.clone(), clocks))
             lifecycle_task = tg.create_task(self._participant_lifecycle_worker(bus.clone()))
             user_audio_task = tg.create_task(self._read_user_audio_loop(bus, clocks))
+            tg.create_task(self._playback_event_forwarder(bus.clone()))
             bus.ready()
 
             await bus.publish(ParticipantJoined(participant_id="local"))

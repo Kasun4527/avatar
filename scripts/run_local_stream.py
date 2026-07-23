@@ -127,7 +127,7 @@ def main() -> int:
 
     host = os.environ.get("STREAMER_HOST", "0.0.0.0")
     port = _env_int("STREAMER_PORT", 7860)
-    renderer_port = _env_int("RENDERER_PORT", 8000)
+    renderer_port = _env_int("RENDERER_PORT", 8002)
 
     renderer = _start_renderer(renderer_port)
     streamer: subprocess.Popen[bytes] | None = None

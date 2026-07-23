@@ -14,6 +14,7 @@ applies the hybrid nominal/wall-clock rule); the track does not re-stamp.
 
 import asyncio
 import fractions
+import json
 from typing import Literal
 
 import av
@@ -103,6 +104,7 @@ class LocalRTC:
         self.pc = pc
         self._video_track = _QueuedVideoTrack()
         self._audio_track = _QueuedAudioTrack()
+        self._events_channel = None
         self._inbound_audio: asyncio.Queue[SpeechBuffer] = asyncio.Queue(maxsize=600)
         self._connection_state: ConnectionState = "new"
         self._state_waiters: list[asyncio.Future[ConnectionState]] = []
@@ -111,6 +113,17 @@ class LocalRTC:
         pc.addTrack(self._audio_track)
         pc.on("connectionstatechange", self._on_state_change)
         pc.on("track", self._on_track)
+        pc.on("datachannel", self._on_datachannel)
+
+    def _on_datachannel(self, channel) -> None:
+        if channel.label == "events":
+            _LOGGER.info("localrtc received events data channel from browser")
+            self._events_channel = channel
+
+    def send_event(self, data: dict) -> None:
+        """Send a JSON-serializable event to the browser over the events channel."""
+        if self._events_channel is not None and self._events_channel.readyState == "open":
+            self._events_channel.send(json.dumps(data))
 
     def _on_state_change(self) -> None:
         state: ConnectionState = self.pc.connectionState  # pyright: ignore [reportAssignmentType]
