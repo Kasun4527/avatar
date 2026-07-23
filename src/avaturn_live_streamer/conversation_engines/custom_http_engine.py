@@ -81,13 +81,19 @@ async def _speak(bus, audio_future: asyncio.Future, para_index: int, rate: float
     await bus.publish(
         SegmentGenerationStarted(segment_id=segment_id, metadata={"para_index": str(para_index)})
     )
-    audio_int16 = await audio_future
-    audio_int16 = await asyncio.get_event_loop().run_in_executor(
-        None, _time_stretch, audio_int16, rate
-    )
-    buffer = SpeechBuffer.from_bytes(audio_int16.tobytes(), _TTS_SAMPLE_RATE)
-    await bus.publish(SegmentChunkGenerated(segment_id=segment_id, buffer=buffer))
-    await bus.publish(SegmentGenerationCompleted(segment_id=segment_id))
+    try:
+        audio_int16 = await audio_future
+        audio_int16 = await asyncio.get_event_loop().run_in_executor(
+            None, _time_stretch, audio_int16, rate
+        )
+        buffer = SpeechBuffer.from_bytes(audio_int16.tobytes(), _TTS_SAMPLE_RATE)
+        await bus.publish(SegmentChunkGenerated(segment_id=segment_id, buffer=buffer))
+    finally:
+        # Always close the segment, even on TTS/time-stretch failure — the
+        # scheduler's write-active-segment stays latched on a failed segment
+        # otherwise, and silently rejects every paragraph that comes after it
+        # as a "double segment start".
+        await bus.publish(SegmentGenerationCompleted(segment_id=segment_id))
 
 
 async def run(
