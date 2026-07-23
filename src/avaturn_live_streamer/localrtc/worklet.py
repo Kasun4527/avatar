@@ -12,6 +12,7 @@ Video frames carry their audio (`Frame.audio`), so both go out via the same
 worker.
 """
 
+import json
 import math
 from asyncio import TaskGroup
 from fractions import Fraction
@@ -28,8 +29,11 @@ from avaturn_live_streamer.event_bus import EventBus
 from avaturn_live_streamer.events import (
     ParticipantJoined,
     ParticipantLeft,
+    PauseAvatarSpeech,
+    ResumeAvatarSpeech,
     SegmentPlaybackCompleted,
     SegmentPlaybackStarted,
+    SetSpeechSpeed,
     Shutdown,
     StreamEnded,
     StreamStarted,
@@ -75,6 +79,31 @@ class LocalRTCWorklet:
                     "para_index": int(raw_index) if raw_index is not None else None,
                 })
 
+    def _handle_incoming_command(self, bus: EventBus, message) -> None:
+        """Sync callback (aiortc data channel messages aren't awaited) that
+        turns a browser command into a bus event. publish_nowait is the
+        documented tool for exactly this "sync callback, may fire before
+        all workers are ready" case."""
+        try:
+            data = json.loads(message)
+        except (TypeError, ValueError):
+            _LOGGER.warning("localrtc received unparseable events-channel message: %r", message)
+            return
+
+        command = data.get("command")
+        if command == "pause":
+            bus.publish_nowait(PauseAvatarSpeech(), allow_pre_ready=True)
+        elif command == "resume":
+            bus.publish_nowait(ResumeAvatarSpeech(), allow_pre_ready=True)
+        elif command == "set_speed":
+            rate = data.get("rate")
+            if isinstance(rate, (int, float)):
+                bus.publish_nowait(SetSpeechSpeed(rate=float(rate)), allow_pre_ready=True)
+            else:
+                _LOGGER.warning("localrtc set_speed command missing numeric rate: %r", data)
+        else:
+            _LOGGER.warning("localrtc received unknown events-channel command: %r", data)
+
     @async_log_entry_exit
     async def run(self, bus: EventBus, clocks: StreamClocks) -> None:
         try:
@@ -83,6 +112,14 @@ class LocalRTCWorklet:
             _LOGGER.warning("WebRTC connection timed out — peer never connected, exiting cleanly")
             bus.ready()  # unblock other workers waiting on this worklet
             return
+
+        # The browser creates the "events" data channel before its offer, so
+        # it's available once connected. We both send on it (paragraph
+        # highlight sync) and now also receive on it (pause/resume/speed
+        # commands from the browser) — RTCDataChannel is bidirectional
+        # regardless of which side created it.
+        events_channel = await self._peer.wait_events_channel()
+        events_channel.on("message", lambda msg: self._handle_incoming_command(bus, msg))
 
         async with TaskGroup() as tg:
             main_task = tg.create_task(self._video_to_peer_worker(bus.clone(), clocks))

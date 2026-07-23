@@ -34,10 +34,24 @@ class StreamClocks:
         self._total_sent_duration = 0.0
         self._started_at: float | None = None
         self._started = asyncio.Event()
+        # Pause support: _pause_offset accumulates elapsed real time spent
+        # paused, so `now` can "skip over" it on resume instead of jumping
+        # forward. _paused_since, while set, freezes `now` at that instant.
+        self._pause_offset = 0.0
+        self._paused_since: float | None = None
 
     def start(self):
         self._started_at = aiotime()
         self._started.set()
+
+    def pause(self):
+        if self._paused_since is None:
+            self._paused_since = aiotime()
+
+    def resume(self):
+        if self._paused_since is not None:
+            self._pause_offset += aiotime() - self._paused_since
+            self._paused_since = None
 
     async def wakeup_at(self, time: float):
         await self._started.wait()
@@ -55,11 +69,11 @@ class StreamClocks:
 
     @property
     def now(self):
-        return (
-            aiotime() - self._total_delay - self._started_at
-            if self._started_at is not None
-            else 0.0
-        )
+        if self._started_at is None:
+            return 0.0
+        if self._paused_since is not None:
+            return self._paused_since - self._total_delay - self._started_at - self._pause_offset
+        return aiotime() - self._total_delay - self._started_at - self._pause_offset
 
     @asynccontextmanager
     async def measure_delay_after_deadline(

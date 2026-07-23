@@ -105,6 +105,7 @@ class LocalRTC:
         self._video_track = _QueuedVideoTrack()
         self._audio_track = _QueuedAudioTrack()
         self._events_channel = None
+        self._events_channel_ready: asyncio.Event = asyncio.Event()
         self._inbound_audio: asyncio.Queue[SpeechBuffer] = asyncio.Queue(maxsize=600)
         self._connection_state: ConnectionState = "new"
         self._state_waiters: list[asyncio.Future[ConnectionState]] = []
@@ -119,11 +120,22 @@ class LocalRTC:
         if channel.label == "events":
             _LOGGER.info("localrtc received events data channel from browser")
             self._events_channel = channel
+            self._events_channel_ready.set()
 
     def send_event(self, data: dict) -> None:
         """Send a JSON-serializable event to the browser over the events channel."""
         if self._events_channel is not None and self._events_channel.readyState == "open":
             self._events_channel.send(json.dumps(data))
+
+    async def wait_events_channel(self, timeout: float = 30.0):
+        """Block until the browser-created events channel has been received.
+
+        Returns the raw aiortc RTCDataChannel so callers can attach their own
+        message handler (e.g. for inbound pause/resume/speed commands).
+        """
+        async with asyncio.timeout(timeout):
+            await self._events_channel_ready.wait()
+        return self._events_channel
 
     def _on_state_change(self) -> None:
         state: ConnectionState = self.pc.connectionState  # pyright: ignore [reportAssignmentType]

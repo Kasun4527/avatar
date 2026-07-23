@@ -3,11 +3,9 @@
 
 """Shared engine builders used by local CLI entry points."""
 
-import asyncio
 import re
 
 from avaturn_live_streamer.conversation_engines.custom_http_engine import run as custom_http_run
-from avaturn_live_streamer.conversation_engines.custom_http_engine import _text_to_audio
 from collections.abc import Callable, Coroutine
 from typing import Annotated, Literal
 from functools import partial
@@ -55,6 +53,7 @@ class CustomEngineOptions(BaseModel):
     type: Literal["custom"] = "custom"
     content: str = ""
     topic: str = ""
+    speed: float = 1.0
 
 
 class CartesiaEngineOptions(BaseModel):
@@ -151,11 +150,10 @@ async def build_engine(options: EngineOptions, *, stream_id: str) -> BuiltEngine
              speech_text = options.content if options.content else f"{options.topic} පිළිබඳ පාඩම."
              speech_text = re.sub(r'\[IMAGE:[^\]]+\]', '', speech_text, flags=re.IGNORECASE).strip()[:8000]
              paragraphs = [p.strip() for p in re.split(r'\n\s*\n', speech_text) if p.strip()] or [speech_text]
-             loop = asyncio.get_event_loop()
-             audio_chunks = []
-             for para in paragraphs:
-                 audio = await loop.run_in_executor(None, _text_to_audio, para)
-                 audio_chunks.append(audio)
-                 print(f"[Builder] TTS ready para — {len(audio)} samples, {len(audio)/24000:.1f}s")
              cfg = OpenAIRealtimeAPIConversationEngineConfig(client_secret="custom")
-             return cfg, partial(custom_http_run, audio_chunks=audio_chunks, topic=options.topic)
+             return cfg, partial(
+                 custom_http_run,
+                 paragraphs=paragraphs,
+                 topic=options.topic,
+                 initial_speed=options.speed,
+             )

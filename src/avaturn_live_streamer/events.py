@@ -167,6 +167,27 @@ class DiscardAvatarSpeechBuffer:
     pass
 
 
+@dataclass(slots=True)
+class PauseAvatarSpeech:
+    """Freeze avatar speech/video exactly where it is — non-destructive, unlike DiscardAvatarSpeechBuffer."""
+
+    pass
+
+
+@dataclass(slots=True)
+class ResumeAvatarSpeech:
+    """Resume avatar speech/video from exactly where PauseAvatarSpeech froze it."""
+
+    pass
+
+
+@dataclass(slots=True)
+class SetSpeechSpeed:
+    """Change the playback rate for paragraphs spoken from this point on."""
+
+    rate: float
+
+
 # =============================================================================
 # TRANSPORT COMMANDS (Pydantic) - cross RabbitMQ transport as StreamControlCommand payload
 # =============================================================================

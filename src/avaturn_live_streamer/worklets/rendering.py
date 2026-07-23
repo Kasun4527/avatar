@@ -3,6 +3,7 @@
 
 """Speech-to-video worklet with event bus integration."""
 
+import asyncio
 from asyncio import TaskGroup
 from fractions import Fraction
 
@@ -18,6 +19,8 @@ from avaturn_live_streamer.event_bus import EventBus
 from avaturn_live_streamer.events import (
     DiscardAvatarSpeechBuffer,
     Frame,
+    PauseAvatarSpeech,
+    ResumeAvatarSpeech,
     ScheduledEvent,
     SegmentChunkGenerated,
     SegmentGenerationCompleted,
@@ -72,6 +75,14 @@ _METRIC_RENDER_SLEEP_FOR = _METER.create_histogram(
 # fmt: on
 
 
+def _make_initially_resumed_event() -> asyncio.Event:
+    # Starts "not paused" — the render loop must not block before any
+    # PauseAvatarSpeech has ever been received.
+    event = asyncio.Event()
+    event.set()
+    return event
+
+
 def _render_metric_attributes() -> dict[str, str]:
     attributes: dict[str, str] = {}
     stream_id = baggage.get_baggage("stream_id")
@@ -103,6 +114,7 @@ class RenderingWorklet:
     _renderer_registry: RendererClientRegistry
     _config: RendererConfig
     _segment_metadata: dict[SegmentId, SegmentMetadata] = Factory(dict)
+    _resume_event: asyncio.Event = Factory(_make_initially_resumed_event)
 
     @async_log_entry_exit
     async def run(self, bus: EventBus, clocks: StreamClocks) -> None:
@@ -129,11 +141,12 @@ class RenderingWorklet:
                 name="RenderingWorklet._render_frames_loop",
             )
 
-            await self._listen_bus(bus, speech_scheduler, user_speech_scheduler)
+            await self._listen_bus(bus, clocks, speech_scheduler, user_speech_scheduler)
 
     async def _listen_bus(
         self,
         bus: EventBus,
+        clocks: StreamClocks,
         speech_scheduler: SpeechScheduler,
         user_speech_scheduler: SpeechScheduler,
     ):
@@ -146,6 +159,8 @@ class RenderingWorklet:
             UserSpeechStreamEnd,
             Shutdown,
             DiscardAvatarSpeechBuffer,
+            PauseAvatarSpeech,
+            ResumeAvatarSpeech,
         ) as sub:
             bus.ready()  # Signal ready after subscribing
             async for event in sub:
@@ -176,7 +191,18 @@ class RenderingWorklet:
                     case DiscardAvatarSpeechBuffer():
                         await speech_scheduler.interrupt()
 
+                    case PauseAvatarSpeech():
+                        clocks.pause()
+                        self._resume_event.clear()
+
+                    case ResumeAvatarSpeech():
+                        clocks.resume()
+                        self._resume_event.set()
+
                     case Shutdown():
+                        # Make sure the render loop isn't blocked on a pause
+                        # when shutting down, or it would never see this.
+                        self._resume_event.set()
                         await speech_scheduler.interrupt()
                         await speech_scheduler.stop()
                         await user_speech_scheduler.stop()
@@ -201,6 +227,11 @@ class RenderingWorklet:
         renderer = self._renderer_registry.get_renderer(self._config.model)
 
         while not speech_scheduler.is_stopped():
+            # Pause gate: while paused, don't call do_step() at all — that's
+            # the only thing that advances the scheduler's position cursor,
+            # so simply not calling it freezes audio/video exactly here.
+            await self._resume_event.wait()
+
             step_result = await speech_scheduler.do_step()
             user_chunk = await user_speech_scheduler.do_step()
 
