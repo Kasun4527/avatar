@@ -55,7 +55,7 @@ def _time_stretch(audio_int16: np.ndarray, rate: float) -> np.ndarray:
     rate < 1.0 = slower/longer. No-op at rate == 1.0, the common case, to
     avoid any quality loss from a redundant round-trip through the
     time-stretch algorithm."""
-    if rate == 1.0 or audio_int16.size == 0:
+    if abs(rate - 1.0) < 1e-6 or audio_int16.size == 0:
         return audio_int16
     import librosa
 
