@@ -64,25 +64,13 @@ def _time_stretch(audio_int16: np.ndarray, rate: float) -> np.ndarray:
     return np.clip(stretched * 32768.0, -32768, 32767).astype(np.int16)
 
 
-def _fetch_audio(text: str) -> asyncio.Future:
-    """Kick off TTS generation in the background so it can run while the
-    previous paragraph is still being spoken. `run_in_executor` starts the
-    call on a thread immediately and returns an awaitable Future for it —
-    no need to wrap it in a Task, and it can't be (Future, not a coroutine).
-    Returns raw (rate 1.0) audio — time-stretch is deliberately applied
-    later, in `_speak`, so a live SetSpeechSpeed change can still be honored
-    right up until this paragraph is actually about to play instead of being
-    locked in whenever the prefetch happened to start."""
-    return asyncio.get_event_loop().run_in_executor(None, _text_to_audio, text)
-
-
-async def _speak(bus, audio_future: asyncio.Future, para_index: int, rate: float) -> None:
+async def _speak(bus, text: str, para_index: int, rate: float) -> None:
     segment_id = str(TypeID("seg"))
     await bus.publish(
         SegmentGenerationStarted(segment_id=segment_id, metadata={"para_index": str(para_index)})
     )
     try:
-        audio_int16 = await audio_future
+        audio_int16 = await asyncio.get_event_loop().run_in_executor(None, _text_to_audio, text)
         audio_int16 = await asyncio.get_event_loop().run_in_executor(
             None, _time_stretch, audio_int16, rate
         )
@@ -137,22 +125,12 @@ async def run(
             print(f"[TeacherEngine] no content to speak for topic='{topic}'")
         else:
             print(f"[TeacherEngine] speaking {len(paragraphs)} paragraph(s) for topic='{topic}'")
-            next_audio_future = _fetch_audio(paragraphs[0])
             for i, para in enumerate(paragraphs):
-                audio_future = next_audio_future
-                # Start fetching paragraph i+1's audio now, in parallel with
-                # paragraph i's time-stretch/publish/render — hides the TTS
-                # round-trip behind the previous paragraph's playback instead
-                # of paying it fresh at the start of every paragraph.
-                if i + 1 < len(paragraphs):
-                    next_audio_future = _fetch_audio(paragraphs[i + 1])
                 try:
-                    await _speak(bus, audio_future, para_index=i, rate=current_rate[0])
+                    await _speak(bus, para, para_index=i, rate=current_rate[0])
                 except RuntimeError as e:
                     if "timed out" in str(e):
                         print("[TeacherEngine] bus timed out — peer disconnected, exiting cleanly")
-                        if i + 1 < len(paragraphs):
-                            next_audio_future.cancel()
                         return
                     raise
                 except Exception as e:
