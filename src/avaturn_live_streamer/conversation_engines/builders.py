@@ -148,7 +148,7 @@ async def build_engine(options: EngineOptions, *, stream_id: str) -> BuiltEngine
             return await build_cartesia(stream_id=stream_id, options=options)
         case CustomEngineOptions():
              speech_text = options.content if options.content else f"{options.topic} පිළිබඳ පාඩම."
-             speech_text = re.sub(r'\[IMAGE:[^\]]+\]', '', speech_text, flags=re.IGNORECASE).strip()[:8000]
+             speech_text = re.sub(r'\[IMAGE:[^\]]+\]', '', speech_text, flags=re.IGNORECASE).strip()
              paragraphs = [p.strip() for p in re.split(r'\n\s*\n', speech_text) if p.strip()] or [speech_text]
              cfg = OpenAIRealtimeAPIConversationEngineConfig(client_secret="custom")
              return cfg, partial(
